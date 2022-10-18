@@ -1,3 +1,13 @@
+// NOTE: This project requires 2 dependencies that are not available in the Arduino package manager:
+// https://github.com/me-no-dev/ESPAsyncWebServer
+// https://github.com/me-no-dev/AsyncTCP
+
+
+
+
+
+
+
 // LED
 #include "lib\UMS3.h"
 
@@ -6,8 +16,28 @@ UMS3 ums3;
 // General
 #include <chrono>
 #include <list>
+#include <map>
 
-using namespace std::chrono;
+using namespace std;
+
+
+// WIFI AP
+/*
+  WiFiAccessPoint.ino creates a WiFi access point and provides a web server on it.
+
+  Steps:
+  1. Connect to the access point "yourAp"
+  2. Point your web browser to http://192.168.4.1/H to turn the LED on or http://192.168.4.1/L to turn it off
+     OR
+     Run raw TCP "GET /H" and "GET /L" on PuTTY terminal with 192.168.4.1 as IP address and 80 as port
+
+  Created for arduino-esp32 on 04 July, 2018
+  by Elochukwu Ifediora (fedy0)
+*/
+// WIFI AP
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>
 
 
 // SCD-41
@@ -30,17 +60,18 @@ using namespace std::chrono;
 
 // --------------- START USER SETTINGS ---------------
 bool enableLed = true;
-int loopTimeLed = 20; // Default: 10
+int loopTimeLed = 5; // Default: 10
 int brightnessLed = 255 / 3; // 0-255
 // Flickers the LED, for loop performance testing
 bool flickerLed = false;
 int flickerTime = 250;
 
-bool enableScd41 = false;
+bool enableWifiAp = true;
+bool enableScd41 = true;
 bool enablePmsa003i = false;
 bool enableBme688 = false;
 bool enableLsm9ds1 = false;
-bool enableGps = true;
+bool enableGps = false;
 
 int loopTimeGlobal = 0; // Default: 1000/0 for off
 
@@ -51,6 +82,21 @@ int loopTimeLsm9ds1 = 50; // Default: 200, Tested_Low: 20
 
 // --------------- END USER SETTINGS ---------------
 
+
+// WIFI AP
+// Set these to your desired credentials.
+// const char *ssid = "wat.jpg";
+// const char *password = "delta1234";
+// Setting network credentials
+const char *ssid = "wat.jpg";
+const char *password = "delta1234";
+// Creating a AsyncWebServer object
+WiFiServer server(100);
+AsyncWebServer web_server(80);
+
+const char index_html[] PROGMEM = R"rawliteral(
+  <a href=/info.json>Click here</a> to access the SensorArray's output.<br>
+)rawliteral";
 
 
 
@@ -114,6 +160,35 @@ std::list<int> rgb_color_wheel(int wheel_pos) {
     }
 }
 
+string map_to_json(std::map<string, string> mapToConvert) {
+
+    if (mapToConvert.size() == 0) {
+      return "{}";
+    }
+
+    string jsonString = "{";
+
+    for (auto const& pair : mapToConvert) {
+        string key = pair.first;
+        string value = pair.second;
+
+        jsonString.append("\"" + key + "\":\"" + value + "\", ");
+    }
+
+    jsonString.pop_back();
+    jsonString.pop_back();
+    jsonString.append("}");
+
+    return jsonString;
+}
+
+bool ends_with(const std::string &str, const std::string &suffix)
+{
+    return str.size() >= suffix.size() &&
+           str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+
 
 // SCD-41
 void printUint16Hex(uint16_t value) {
@@ -153,6 +228,11 @@ void setupSensor()
 }
 
 
+// Create map to keep track of all of the settings, for providing to wifi clients
+std::map<string, string> settings = {};
+String settings_str = "";
+
+
 void setup() {
 
   Serial.begin(115200);
@@ -170,6 +250,35 @@ void setup() {
   }
 
   // --------------- END INIT PRO-S3/FEATHER-S3 ---------------
+  if (enableWifiAp == true) {
+    // --------------- START INIT WIFI AP ---------------
+    // Connect to Wi-Fi
+    WiFi.softAP(ssid, password);
+    IPAddress myIP = WiFi.softAPIP();
+    Serial.print("WIFI AP Server IP address: ");
+    Serial.println(myIP);
+    server.begin();
+
+    Serial.println("WIFI AP Server started");
+
+
+    //////////////// WEB SERVER
+    // Route for root / web page
+    web_server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+      request->send_P(200, "text/html", index_html);
+    });
+
+    // Send a GET request to <ESP_IP>/update?output=<inputMessage1>&state=<inputMessage2>
+    web_server.on("/info.json", HTTP_GET, [] (AsyncWebServerRequest *request) {
+      request->send(200, "application/json", settings_str);
+    });
+
+    // Start server
+    web_server.begin();
+    //////////////// WEB SERVER
+    // --------------- END INIT WIFI AP ---------------
+  }
+  
 
   if (enableScd41 == true) {
     // --------------- START SCD-41 CODE ---------------
@@ -286,8 +395,6 @@ void setup() {
 }
 
 
-
-
 // Keeps track of time since readng for each sensor type
 auto timeGlobal = std::chrono::high_resolution_clock::now();
 
@@ -305,10 +412,14 @@ int color = 0;
 bool flickerOn = true;
 
 void loop() {
+  if (enableWifiAp == true) {
+      
+  }
+
   if (enableLed == true) {
     // Flicker LED, if enabled
     if (flickerLed == true) {
-      auto duration = duration_cast<milliseconds>(std::chrono::high_resolution_clock::now() - timeFlickerLed).count();
+      auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - timeFlickerLed).count();
       if (duration > flickerTime) {
         timeFlickerLed = std::chrono::high_resolution_clock::now();
         if (flickerOn == true) {
@@ -321,7 +432,7 @@ void loop() {
       }
     }
 
-    auto duration = duration_cast<milliseconds>(std::chrono::high_resolution_clock::now() - timeLed).count();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - timeLed).count();
     if (duration > loopTimeLed) {
       timeLed = std::chrono::high_resolution_clock::now();
       // Rotate the LED's color
@@ -332,13 +443,13 @@ void loop() {
     }
   }
 
-  // Skip the loop if the global is not NULL
-  auto duration = duration_cast<milliseconds>(std::chrono::high_resolution_clock::now() - timeGlobal).count();
-  if (duration > loopTimeGlobal) {
+  // Skip the loop if the global == 0
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - timeGlobal).count();
+  if (loopTimeGlobal == 0 || duration > loopTimeGlobal) {
     timeGlobal = std::chrono::high_resolution_clock::now();
   
     if (enableScd41 == true) {
-      auto duration = duration_cast<milliseconds>(std::chrono::high_resolution_clock::now() - timeScd41).count();
+      auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - timeScd41).count();
       if (duration > loopTimeScd41) {
         timeScd41 = std::chrono::high_resolution_clock::now();
 
@@ -370,12 +481,18 @@ void loop() {
 
             Serial.println();
             Serial.println();
+
+            // Save the info to the settings object
+            settings["scd41_co2"] = to_string(co2);
+            settings["scd41_temperature"] = to_string(temperature);
+            settings["scd41_humidity"] = to_string(humidity);
+            settings_str = String(map_to_json(settings).c_str());
         }
         // --------------- END SCD-41 CODE ---------------
       }
     }
     if (enablePmsa003i == true) {
-      auto duration = duration_cast<milliseconds>(std::chrono::high_resolution_clock::now() - timePmsa003i).count();
+      auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - timePmsa003i).count();
       if (duration > loopTimePmsa003i) {
         timePmsa003i = std::chrono::high_resolution_clock::now();
 
@@ -414,7 +531,7 @@ void loop() {
     }
 
     if (enableBme688 == true) {
-      auto duration = duration_cast<milliseconds>(std::chrono::high_resolution_clock::now() - timeBme688).count();
+      auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - timeBme688).count();
       if (duration > loopTimeBme688) {
         timeBme688 = std::chrono::high_resolution_clock::now();
 
@@ -463,7 +580,7 @@ void loop() {
     }
 
     if (enableLsm9ds1 == true) {
-        auto duration = duration_cast<milliseconds>(std::chrono::high_resolution_clock::now() - timeLsm9ds1).count();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - timeLsm9ds1).count();
         if (duration > loopTimeLsm9ds1) {
           // --------------- START LSM9DS1 CODE ---------------
           timeLsm9ds1 = std::chrono::high_resolution_clock::now();
