@@ -21,7 +21,7 @@ UMS3 ums3;
 using namespace std;
 
 
-// WIFI AP
+// WIFI AP, WEB SERVER and WIFI DIRECT
 /*
   WiFiAccessPoint.ino creates a WiFi access point and provides a web server on it.
 
@@ -34,14 +34,13 @@ using namespace std;
   Created for arduino-esp32 on 04 July, 2018
   by Elochukwu Ifediora (fedy0)
 */
-// WIFI AP
+// WIFI AP, WEB SERVER and WIFI DIRECT
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
 
 
 // SCD-41
-#include <Arduino.h>
 #include <SensirionI2CScd4x.h>
 #include <Wire.h>
 // PMSA003I
@@ -66,12 +65,20 @@ int brightnessLed = 255 / 3; // 0-255
 bool flickerLed = false;
 int flickerTime = 250;
 
-bool enableWifiAp = true;
-bool enableScd41 = true;
+// WIFI Modes (only enable one of these)
+bool enableWifiAp = false;
+bool enableWifiDirectServer = true;
+bool enableWifiDirectClient = false;
+
+// WEB SERVER
+bool enableWebServer = false;
+
+// Sensors
+bool enableScd41 = false;
 bool enablePmsa003i = false;
 bool enableBme688 = false;
 bool enableLsm9ds1 = false;
-bool enableGps = false;
+bool enableGps = true;
 
 int loopTimeGlobal = 0; // Default: 1000/0 for off
 
@@ -83,19 +90,50 @@ int loopTimeLsm9ds1 = 50; // Default: 200, Tested_Low: 20
 // --------------- END USER SETTINGS ---------------
 
 
-// WIFI AP
+// WIFI AP and WIFI DIRECT
 // Set these to your desired credentials.
 // const char *ssid = "wat.jpg";
 // const char *password = "delta1234";
 // Setting network credentials
-const char *ssid = "wat.jpg";
+const char *ssid = "S-SA";
 const char *password = "delta1234";
+
+
+// WIFI Direct Server
+#define SERVER_NUM_CLIENTS 2
+String data;
+String CLIENT;
+String ACTION;
+
+unsigned long previousMillis = 0;
+int interval = 500;
+
+String CLIENT_NAME = "SENSOR1";
+
+String ServerMessage;
+
+IPAddress local_IP(192, 168, 4, 1);
+IPAddress gateway(192, 168, 4, 9);
+IPAddress subnet(255, 255, 255, 0);
+WiFiServer wifi_server(100);
+// This matrix is defined for further development, it has not been used in the code
+WiFiClient *clients[SERVER_NUM_CLIENTS] = {NULL};
+
+
+// WIFI Direct Client
+WiFiClient client;
+
+// IP Address of the server
+IPAddress client_server(192, 168, 4, 1);
+
+
+
+// WEB SERVER
 // Creating a AsyncWebServer object
-WiFiServer server(100);
 AsyncWebServer web_server(80);
 
 const char index_html[] PROGMEM = R"rawliteral(
-  <a href=/info.json>Click here</a> to access the SensorArray's output.<br>
+<a href=/info.json>Click here</a> to access the SensorArray's output.<br>
 )rawliteral";
 
 
@@ -144,93 +182,10 @@ Adafruit_LSM9DS1 lsm = Adafruit_LSM9DS1();
 #define PMTK_Q_RELEASE "$PMTK605*31"
 
 
-// Global functions
-std::list<int> rgb_color_wheel(int wheel_pos) {
-    // Color wheel to allow for cycling through the rainbow of RGB colors.
-    wheel_pos = wheel_pos % 255;
-
-    if (wheel_pos < 85) {
-        return {255 - wheel_pos * 3, 0, wheel_pos * 3};
-    } else if (wheel_pos < 170) {
-        wheel_pos -= 85;
-        return {0, wheel_pos * 3, 255 - wheel_pos * 3};
-    } else {
-        wheel_pos -= 170;
-        return {wheel_pos * 3, 255 - wheel_pos * 3, 0};
-    }
-}
-
-string map_to_json(std::map<string, string> mapToConvert) {
-
-    if (mapToConvert.size() == 0) {
-      return "{}";
-    }
-
-    string jsonString = "{";
-
-    for (auto const& pair : mapToConvert) {
-        string key = pair.first;
-        string value = pair.second;
-
-        jsonString.append("\"" + key + "\":\"" + value + "\", ");
-    }
-
-    jsonString.pop_back();
-    jsonString.pop_back();
-    jsonString.append("}");
-
-    return jsonString;
-}
-
-bool ends_with(const std::string &str, const std::string &suffix)
-{
-    return str.size() >= suffix.size() &&
-           str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
-
-
-// SCD-41
-void printUint16Hex(uint16_t value) {
-    Serial.print(value < 4096 ? "0" : "");
-    Serial.print(value < 256 ? "0" : "");
-    Serial.print(value < 16 ? "0" : "");
-    Serial.print(value, HEX);
-}
-
-void printSerialNumber(uint16_t serial0, uint16_t serial1, uint16_t serial2) {
-    Serial.print("Serial: 0x");
-    printUint16Hex(serial0);
-    printUint16Hex(serial1);
-    printUint16Hex(serial2);
-    Serial.println();
-}
-
-// LSM9DS1
-void setupSensor()
-{
-  // 1.) Set the accelerometer range
-  lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_2G);
-  //lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_4G);
-  //lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_8G);
-  //lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_16G);
-  
-  // 2.) Set the magnetometer sensitivity
-  lsm.setupMag(lsm.LSM9DS1_MAGGAIN_4GAUSS);
-  //lsm.setupMag(lsm.LSM9DS1_MAGGAIN_8GAUSS);
-  //lsm.setupMag(lsm.LSM9DS1_MAGGAIN_12GAUSS);
-  //lsm.setupMag(lsm.LSM9DS1_MAGGAIN_16GAUSS);
-
-  // 3.) Setup the gyroscope
-  lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_245DPS);
-  //lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_500DPS);
-  //lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_2000DPS);
-}
-
-
 // Create map to keep track of all of the settings, for providing to wifi clients
 std::map<string, string> settings = {};
 String settings_str = "";
+String last_settings_str = "";
 
 
 void setup() {
@@ -257,12 +212,14 @@ void setup() {
     IPAddress myIP = WiFi.softAPIP();
     Serial.print("WIFI AP Server IP address: ");
     Serial.println(myIP);
-    server.begin();
+    wifi_server.begin();
 
     Serial.println("WIFI AP Server started");
+    // --------------- END INIT WIFI AP ---------------
+  }
 
-
-    //////////////// WEB SERVER
+  if (enableWebServer == true) {
+    // --------------- START INIT WIFI AP ---------------
     // Route for root / web page
     web_server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
       request->send_P(200, "text/html", index_html);
@@ -275,8 +232,38 @@ void setup() {
 
     // Start server
     web_server.begin();
-    //////////////// WEB SERVER
-    // --------------- END INIT WIFI AP ---------------
+    // --------------- END INIT WEB SERVER ---------------
+  }
+
+  if (enableWifiDirectServer == true) {
+    // --------------- START WIFI DIRECT SERVER ---------------
+    Serial.println();
+    Serial.print("Setting soft AP (Access Point)…");
+    // Remove the password parameter, if you want the AP (Access Point) to be open
+    WiFi.mode(WIFI_AP);
+    // WiFi.softAPConfig(local_IP, gateway, subnet);
+    WiFi.softAP(ssid, password);
+    IPAddress IP = WiFi.softAPIP();
+    Serial.print("AP IP address: ");
+    Serial.println(IP);
+    wifi_server.begin();
+    // --------------- END WIFI DIRECT SERVER ---------------
+  }
+
+  if (enableWifiDirectClient == true) {
+    // --------------- START WIFI DIRECT CLIENT ---------------
+    WiFi.begin(ssid, password);
+    Serial.println("Connecting");
+    while (WiFi.status() != WL_CONNECTED)
+    {
+      delay(50);
+      Serial.print(".");
+      Serial.println("");
+      Serial.print("Connected to WiFi network with IP Address: ");
+      Serial.println(WiFi.localIP());
+      break;
+    }
+    // --------------- END WIFI DIRECT CLIENT ---------------
   }
   
 
@@ -406,14 +393,62 @@ auto timePmsa003i = std::chrono::high_resolution_clock::now();
 auto timeBme688 = std::chrono::high_resolution_clock::now();
 auto timeLsm9ds1 = std::chrono::high_resolution_clock::now();
 
+
 // Keeps track of position for color rotation
 int color = 0;
 // Tracks if the light is on or off, for performance testing the loop 
 bool flickerOn = true;
 
 void loop() {
-  if (enableWifiAp == true) {
-      
+
+  // WIFI Direct Server
+  if (enableWifiDirectServer == true) {
+    if (settings_str != last_settings_str) {
+      clientCommand(settings_str);
+      Serial.println("Sent Settings: " + settings_str);
+      last_settings_str = settings_str;
+    }
+  }
+  // WIFI Direct Client
+  else if (enableWifiDirectClient == true) {
+    unsigned long currentMillis = millis();
+    // if (currentMillis - previousMillis >= interval) {
+      // Serial.println("Attemting to connect");
+      // Check WiFi connection status
+      if (WiFi.status() == WL_CONNECTED) {
+        // Serial.println("wifi status connected");
+        client.connect(client_server, 100);
+        while (client.connected()) {
+          // Serial.println("client connected");
+          String data = client.readStringUntil('\r');
+          // Serial.println(data);
+          if (data != "\0") {
+            // Serial.print("Received data from Server:");
+            Serial.println(data);
+            break;
+
+            int Index = data.indexOf(':');
+            String CLIENT = data.substring(0, Index);
+            String ACTION = data.substring(Index + 1);
+            if (CLIENT == CLIENT_NAME) {
+              if (ACTION == "TEMPERATURE?") {
+                client.println("ACK:10");
+                Serial.println("This is Client: ACK10 was sent to server");
+              }
+            }
+            else if (CLIENT == "OUTPUT1") {
+              if (ACTION == "ON" || ACTION == "OFF") {
+                Serial.println("This is Client: server is sending output1 On or Off command");
+              }
+            }
+
+            client.stop();
+            data = "\0";
+          }
+        }
+      }
+      previousMillis = millis();
+    // }
   }
 
   if (enableLed == true) {
@@ -618,16 +653,166 @@ void loop() {
           c = Serial.read();
           GPSSerial.write(c);
         }
-
       } 
       if (GPSSerial.available()) {
         char c = ' ';
+        string gps_str = "";
         while (c != '\n') {
           c = GPSSerial.read();
+          gps_str = gps_str + c;
           Serial.write(c);
         }
+        // Save the info to the settings object
+        settings["gps_data"] = gps_str;
+        settings_str = String(map_to_json(settings).c_str());
       }
       // --------------- END LSM9DS1 CODE ---------------
     }
   }
 }
+
+
+// Global functions
+std::list<int> rgb_color_wheel(int wheel_pos) {
+    // Color wheel to allow for cycling through the rainbow of RGB colors.
+    wheel_pos = wheel_pos % 255;
+
+    if (wheel_pos < 85) {
+        return {255 - wheel_pos * 3, 0, wheel_pos * 3};
+    } else if (wheel_pos < 170) {
+        wheel_pos -= 85;
+        return {0, wheel_pos * 3, 255 - wheel_pos * 3};
+    } else {
+        wheel_pos -= 170;
+        return {wheel_pos * 3, 255 - wheel_pos * 3, 0};
+    }
+}
+
+string map_to_json(std::map<string, string> mapToConvert) {
+
+    if (mapToConvert.size() == 0) {
+      return "{}";
+    }
+
+    string jsonString = "{";
+
+    for (auto const& pair : mapToConvert) {
+        string key = pair.first;
+        string value = pair.second;
+
+        jsonString.append("\"" + key + "\":\"" + value + "\", ");
+    }
+
+    jsonString.pop_back();
+    jsonString.pop_back();
+    jsonString.append("}");
+
+    return jsonString;
+}
+
+bool ends_with(const std::string &str, const std::string &suffix)
+{
+    return str.size() >= suffix.size() &&
+           str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+
+
+// SCD-41
+void printUint16Hex(uint16_t value) {
+    Serial.print(value < 4096 ? "0" : "");
+    Serial.print(value < 256 ? "0" : "");
+    Serial.print(value < 16 ? "0" : "");
+    Serial.print(value, HEX);
+}
+
+void printSerialNumber(uint16_t serial0, uint16_t serial1, uint16_t serial2) {
+    Serial.print("Serial: 0x");
+    printUint16Hex(serial0);
+    printUint16Hex(serial1);
+    printUint16Hex(serial2);
+    Serial.println();
+}
+
+// LSM9DS1
+void setupSensor()
+{
+  // 1.) Set the accelerometer range
+  lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_2G);
+  //lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_4G);
+  //lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_8G);
+  //lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_16G);
+  
+  // 2.) Set the magnetometer sensitivity
+  lsm.setupMag(lsm.LSM9DS1_MAGGAIN_4GAUSS);
+  //lsm.setupMag(lsm.LSM9DS1_MAGGAIN_8GAUSS);
+  //lsm.setupMag(lsm.LSM9DS1_MAGGAIN_12GAUSS);
+  //lsm.setupMag(lsm.LSM9DS1_MAGGAIN_16GAUSS);
+
+  // 3.) Setup the gyroscope
+  lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_245DPS);
+  //lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_500DPS);
+  //lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_2000DPS);
+}
+
+
+void clientCommand(String input)
+{
+  for (int i = 0; i < SERVER_NUM_CLIENTS; i++)
+  {
+    WiFiClient client = wifi_server.available();
+    if (client)
+    {
+      if (client.connected())
+      {
+        client.println(input);
+        delay(10);
+      }
+    }
+    // client.stop();
+  }
+}
+
+String clientRequest(String input)
+{
+  String response = "\0";
+  for (int i = 0; i < SERVER_NUM_CLIENTS; i++)
+  {
+    WiFiClient client = wifi_server.available();
+    if (client)
+    {
+      client.setTimeout(50);
+      if (client.connected())
+      {
+        client.println(input);
+
+        data = client.readStringUntil('\r'); // received the server's answer
+        if (data != "\0")
+        {
+          int Index = data.indexOf(':');
+
+          CLIENT = data.substring(0, Index);
+          ACTION = data.substring(Index + 1);
+
+          if (CLIENT == "ACK")
+          {
+            response = ACTION;
+          }
+          data = "\0";
+        }
+      }
+    }
+  }
+  return response;
+}
+
+// This void is for further developmets and has not ben used
+void connect_wifi()
+{
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    //delay(100);
+  }
+}
+
