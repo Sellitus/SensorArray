@@ -6,7 +6,8 @@
 
 
 
-
+// Fast ESP32->ESP32 communication
+#include <esp_now.h>
 
 // LED
 #include "lib\UMS3.h"
@@ -34,10 +35,11 @@ using namespace std;
   Created for arduino-esp32 on 04 July, 2018
   by Elochukwu Ifediora (fedy0)
 */
-// WIFI AP, WEB SERVER and WIFI DIRECT
+// WIFI AP, WEB SERVER, WIFI DIRECT and ESP-NOW
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
+#include <esp_now.h>
 
 
 // SCD-41
@@ -67,8 +69,10 @@ int flickerTime = 250;
 
 // WIFI Modes (only enable one of these)
 bool enableWifiAp = false;
-bool enableWifiDirectServer = true;
+bool enableWifiDirectServer = false;
 bool enableWifiDirectClient = false;
+bool enableEspNowServer = true;
+bool enableEspNowClient = false;
 
 // WEB SERVER
 bool enableWebServer = false;
@@ -100,7 +104,7 @@ const char *password = "delta1234";
 
 
 // WIFI Direct Server
-#define SERVER_NUM_CLIENTS 2
+#define SERVER_NUM_CLIENTS 10
 String data;
 String CLIENT;
 String ACTION;
@@ -182,14 +186,36 @@ Adafruit_LSM9DS1 lsm = Adafruit_LSM9DS1();
 #define PMTK_Q_RELEASE "$PMTK605*31"
 
 
+// WIFI
 // Create map to keep track of all of the settings, for providing to wifi clients
 std::map<string, string> settings = {};
 String settings_str = "";
 String last_settings_str = "";
 
+// ESP-NOW
+// REPLACE WITH YOUR ESP RECEIVER'S MAC ADDRESS
+uint8_t broadcastAddress1[] = {0xF4, 0x12, 0xFA, 0x42, 0x0C, 0x88};
+// uint8_t broadcastAddress2[] = {0xFF, , , , , };
+// uint8_t broadcastAddress3[] = {0xFF, , , , , };
+
+// typedef struct test_struct {
+//   int x;
+//   int y;
+// } test_struct;
+
+// test_struct test;
+
+esp_now_peer_info_t peerInfo;
+
+#define MSG_LEN 250
+struct __attribute__((packed)) MSG {                                          
+  char text[MSG_LEN];
+} msg;
+int msgSize = sizeof(msg);
+
+
 
 void setup() {
-
   Serial.begin(115200);
   while (!Serial) {
       delay(100);
@@ -264,6 +290,58 @@ void setup() {
       break;
     }
     // --------------- END WIFI DIRECT CLIENT ---------------
+  }
+
+  if (enableEspNowServer == true) {
+    // --------------- START ESP-NOW SERVER ---------------
+    WiFi.mode(WIFI_STA);
+  
+    if (esp_now_init() != ESP_OK) {
+      Serial.println("Error initializing ESP-NOW");
+      return;
+    }
+    
+    esp_now_register_send_cb(OnDataSent);
+    
+    // register peer
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+    // register first peer  
+    memcpy(peerInfo.peer_addr, broadcastAddress1, 6);
+    if (esp_now_add_peer(&peerInfo) != ESP_OK){
+      Serial.println("Failed to add peer");
+      return;
+    }
+    // // register second peer  
+    // memcpy(peerInfo.peer_addr, broadcastAddress2, 6);
+    // if (esp_now_add_peer(&peerInfo) != ESP_OK){
+    //   Serial.println("Failed to add peer");
+    //   return;
+    // }
+    // /// register third peer
+    // memcpy(peerInfo.peer_addr, broadcastAddress3, 6);
+    // if (esp_now_add_peer(&peerInfo) != ESP_OK){
+    //   Serial.println("Failed to add peer");
+    //   return;
+    // }
+    // --------------- END ESP-NOW SERVER ---------------
+  }
+
+  if (enableEspNowClient == true) {
+    // --------------- START ESP-NOW CLIENT ---------------
+    //Set device as a Wi-Fi Station
+    WiFi.mode(WIFI_STA);
+
+    //Init ESP-NOW
+    if (esp_now_init() != ESP_OK) {
+      Serial.println("Error initializing ESP-NOW");
+      return;
+    }
+    
+    // Once ESPNow is successfully Init, we will register for recv CB to
+    // get recv packer info
+    esp_now_register_recv_cb(OnDataRecv);
+    // --------------- END ESP-NOW CLIENT ---------------
   }
   
 
@@ -399,13 +477,19 @@ int color = 0;
 // Tracks if the light is on or off, for performance testing the loop 
 bool flickerOn = true;
 
+bool connected = false;
+
 void loop() {
+
+  if (client.connected() == false) {
+    connected = false;
+  }
 
   // WIFI Direct Server
   if (enableWifiDirectServer == true) {
     if (settings_str != last_settings_str) {
       clientCommand(settings_str);
-      Serial.println("Sent Settings: " + settings_str);
+      Serial.println("Settings Sent: " + settings_str);
       last_settings_str = settings_str;
     }
   }
@@ -417,7 +501,10 @@ void loop() {
       // Check WiFi connection status
       if (WiFi.status() == WL_CONNECTED) {
         // Serial.println("wifi status connected");
-        client.connect(client_server, 100);
+        if (connected == false) {
+          client.connect(client_server, 100);
+          connected = true;
+        }
         while (client.connected()) {
           // Serial.println("client connected");
           String data = client.readStringUntil('\r');
@@ -425,7 +512,7 @@ void loop() {
           if (data != "\0") {
             // Serial.print("Received data from Server:");
             Serial.println(data);
-            break;
+            continue;
 
             int Index = data.indexOf(':');
             String CLIENT = data.substring(0, Index);
@@ -449,6 +536,27 @@ void loop() {
       }
       previousMillis = millis();
     // }
+  }
+  // ESP-NOW SERVER
+  if (enableEspNowServer == true) {
+    // --------------- START ESP-NOW CODE ---------------
+    if (settings_str != last_settings_str) {
+      strcpy(msg.text, settings_str.c_str());
+      unsigned char store[msgSize];
+      memcpy(&store, &msg, msgSize);
+      esp_err_t result = esp_now_send(NULL, store, msgSize);
+
+      // esp_err_t result = esp_now_send(0, (uint8_t *) &test, sizeof(test_struct));
+      
+      if (result == ESP_OK) {
+        Serial.println("Settings Sent: " + settings_str);
+        last_settings_str = settings_str;
+      }
+      else {
+        Serial.println("Error sending the data");
+      }
+    }
+    // --------------- END ESP-NOW CODE ---------------
   }
 
   if (enableLed == true) {
@@ -666,7 +774,7 @@ void loop() {
         settings["gps_data"] = gps_str;
         settings_str = String(map_to_json(settings).c_str());
       }
-      // --------------- END LSM9DS1 CODE ---------------
+      // --------------- END GPS CODE ---------------
     }
   }
 }
@@ -700,10 +808,9 @@ string map_to_json(std::map<string, string> mapToConvert) {
         string key = pair.first;
         string value = pair.second;
 
-        jsonString.append("\"" + key + "\":\"" + value + "\", ");
+        jsonString.append("\"" + key + "\":\"" + value + "\",");
     }
 
-    jsonString.pop_back();
     jsonString.pop_back();
     jsonString.append("}");
 
@@ -755,7 +862,7 @@ void setupSensor()
   //lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_2000DPS);
 }
 
-
+// WIFI
 void clientCommand(String input)
 {
   for (int i = 0; i < SERVER_NUM_CLIENTS; i++)
@@ -806,6 +913,7 @@ String clientRequest(String input)
   return response;
 }
 
+// WIFI
 // This void is for further developmets and has not ben used
 void connect_wifi()
 {
@@ -814,5 +922,27 @@ void connect_wifi()
   {
     //delay(100);
   }
+}
+
+// ESP-NOW
+// callback when data is sent
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  char macStr[18];
+  Serial.print("Packet to: ");
+  // Copies the sender mac address to a string
+  snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+           mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+  Serial.print(macStr);
+  Serial.print(" send status:\t");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+}
+//callback function that will be executed when data is received
+void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+  memcpy(&msg, incomingData, sizeof(msg));
+  Serial.print("Bytes received: ");
+  Serial.println(len);
+  Serial.print("Settings Received: ");
+  Serial.println(msg.text);
+  Serial.println();
 }
 
